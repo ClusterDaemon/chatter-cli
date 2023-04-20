@@ -1,16 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
+	"github.com/google/uuid"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
-    "flag"
-	"github.com/google/uuid"
 )
 
 type Message struct {
@@ -23,12 +23,12 @@ type ChatSession struct {
 	Messages []Message `json:"messages"`
 }
 
-type GPT4Request struct {
+type ModelRequest struct {
 	Session  ChatSession `json:"session"`
 	ChatText string      `json:"chat_text"`
 }
 
-type GPT4Response struct {
+type ModelResponse struct {
 	ID   string `json:"id"`
 	Text string `json:"text"`
 }
@@ -37,40 +37,57 @@ func generateSessionID() string {
 	return uuid.New().String()
 }
 
-func sendMessage(session ChatSession, message, model string) (GPT4Response, error) {
-	// Prepare the GPT-4 API request
-	gpt4Request := GPT4Request{
+func getOpenAIKey() string {
+	apiKey, present := os.LookupEnv("OPENAI_API_KEY")
+	if !present {
+		fmt.Fprintf(os.Stderr, "Error: OPENAI_API_KEY environment variable is not set.\n")
+		os.Exit(1)
+	}
+	return apiKey
+}
+
+func sendMessage(apiKey string, session ChatSession, message, model string) (ModelResponse, error) {
+	// Prepare the API request
+	formattedRequest := ModelRequest{
 		Session:  session,
 		ChatText: message,
 	}
-	requestJSON, err := json.Marshal(gpt4Request)
+	requestJSON, err := json.Marshal(formattedRequest)
 	if err != nil {
-		return GPT4Response{}, err
+		return ModelResponse{}, err
 	}
 
 	// Send the API request
 	apiURL := fmt.Sprintf("https://api.openai.com/v1/engines/%s/chat", model)
-	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(requestJSON))
+	req, err := http.Post(apiURL, "application/json", bytes.NewBuffer(requestJSON))
 	if err != nil {
-		return GPT4Response{}, err
+		return ModelResponse{}, err
 	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+
 	defer resp.Body.Close()
 
 	// Parse the API response
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return GPT4Response{}, err
+		return ModelResponse{}, err
 	}
 
-	var gpt4Response GPT4Response
-	err = json.Unmarshal(body, &gpt4Response)
+	var formattedResponse ModelResponse
+	err = json.Unmarshal(body, &formattedResponse)
 	if err != nil {
-		return GPT4Response{}, err
+		return ModelResponse{}, err
 	}
 
-	return gpt4Response, nil
+	return formattedResponse, nil
 }
-
 
 func loadChatSessions() (map[string]ChatSession, error) {
 	activeSessions := make(map[string]ChatSession)
@@ -121,7 +138,7 @@ func main() {
 	}
 	sessionID := *sessionFlag
 	if *sessionShortFlag != "" {
-	    sessionID = *sessionShortFlag
+		sessionID = *sessionShortFlag
 	}
 
 	var currentSession ChatSession
@@ -134,33 +151,34 @@ func main() {
 	}
 
 	if sessionID != "" {
-	    if session, ok := activeSessions[sessionID]; ok {
-	        currentSession = session
-	    } else {
-	        currentSession = ChatSession{
-	            ID:       sessionID,
-	            Messages: []Message{},
-	        }
-	        activeSessions[sessionID] = currentSession
-	    }
+		if session, ok := activeSessions[sessionID]; ok {
+			currentSession = session
+		} else {
+			currentSession = ChatSession{
+				ID:       sessionID,
+				Messages: []Message{},
+			}
+			activeSessions[sessionID] = currentSession
+		}
 	} else {
-	    // Generate a new session ID if none is provided
-	    newSessionID := generateSessionID()
-	    currentSession = ChatSession{
-	        ID:       newSessionID,
-	        Messages: []Message{},
-	    }
-	    activeSessions[newSessionID] = currentSession
+		// Generate a new session ID if none is provided
+		newSessionID := generateSessionID()
+		currentSession = ChatSession{
+			ID:       newSessionID,
+			Messages: []Message{},
+		}
+		activeSessions[newSessionID] = currentSession
 	}
 
 	reader := bufio.NewReader(os.Stdin)
+	apiKey := getOpenAIKey()
 
 	for {
 		// Read user input
 		fmt.Print(">")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
-		response, err := sendMessage(currentSession, input, model)
+		response, err := sendMessage(apiKey, currentSession, input, model)
 
 		// Update the current session with the new message
 		newMessage := Message{
